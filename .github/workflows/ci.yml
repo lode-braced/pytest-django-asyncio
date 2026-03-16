@@ -35,6 +35,6 @@ jobs:
       - name: Install ruff
         run: uv tool install ruff
       - name: check formatting
-        run: ruff format --check pytest_django_async_db tests
+        run: ruff format --check pytest_django_asyncio tests
       - name: lint code
-        run: ruff check pytest_django_async_db tests
+        run: ruff check pytest_django_asyncio tests

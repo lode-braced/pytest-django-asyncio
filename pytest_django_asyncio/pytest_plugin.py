@@ -4,7 +4,7 @@ import inspect
 
 import pytest
 
-_FIXTURES_PLUGIN_NAME = "pytest_django_async_db._pytest_plugin_fixtures"
+_FIXTURES_PLUGIN_NAME = "pytest_django_asyncio._pytest_plugin_fixtures"
 
 
 def _needs_backport() -> bool:

@@ -53,7 +53,7 @@ The same backport also works when tests request `db` or `transactional_db` direc
 
 ## Caveats
 
-- If a project disables pytest plugin auto-loading, it must explicitly add `pytest_django_async_db.pytest_plugin` to its
+- If a project disables pytest plugin auto-loading, it must explicitly add `pytest_django_asyncio.pytest_plugin` to its
   plugin list.
 
 ## How It Works

@@ -40,4 +40,4 @@ def test_late_registered_db_helper_override_wins(request: pytest.FixtureRequest)
     fixturedefs = request._fixturemanager.getfixturedefs("_django_db_helper", request.node)
 
     assert fixturedefs is not None
-    assert fixturedefs[-1].func.__module__ == "pytest_django_async_db._pytest_plugin_fixtures"
+    assert fixturedefs[-1].func.__module__ == "pytest_django_asyncio._pytest_plugin_fixtures"

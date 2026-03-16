@@ -28,14 +28,14 @@ dependencies = [
 ]
 
 [project.entry-points.pytest11]
-"pytest_django_async_db.pytest_plugin" = "pytest_django_async_db.pytest_plugin"
+"pytest_django_asyncio.pytest_plugin" = "pytest_django_asyncio.pytest_plugin"
 
 [build-system]
 requires = ["uv_build>=0.8.5,<0.9.0"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
-module-name = "pytest_django_async_db"
+module-name = "pytest_django_asyncio"
 module-root = ""
 
 [dependency-groups]

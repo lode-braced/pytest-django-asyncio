@@ -10,7 +10,7 @@ def _make_downstream_project(pytester, *, manual_load: bool) -> None:
         """
     )
     if manual_load:
-        pytester.makeconftest('pytest_plugins = ["pytest_django_async_db.pytest_plugin"]\n')
+        pytester.makeconftest('pytest_plugins = ["pytest_django_asyncio.pytest_plugin"]\n')
 
     package_dir = pytester.path / "sample_app"
     package_dir.mkdir()
@@ -81,15 +81,15 @@ def test_plugin_auto_loaded(pytestconfig, request):
     fixtures_plugins = [
         name
         for name, _plugin in pluginmanager.list_name_plugin()
-        if name == "pytest_django_async_db._pytest_plugin_fixtures"
+        if name == "pytest_django_asyncio._pytest_plugin_fixtures"
     ]
 
     fixturedefs = request._fixturemanager.getfixturedefs("_django_db_helper", request.node)
 
-    assert pluginmanager.hasplugin("pytest_django_async_db.pytest_plugin")
+    assert pluginmanager.hasplugin("pytest_django_asyncio.pytest_plugin")
     assert len(fixtures_plugins) == 1
     assert fixturedefs is not None
-    assert fixturedefs[-1].func.__module__ == "pytest_django_async_db._pytest_plugin_fixtures"
+    assert fixturedefs[-1].func.__module__ == "pytest_django_asyncio._pytest_plugin_fixtures"
 
 
 @pytest.mark.parametrize("run_number", [1, 2])

@@ -20,6 +20,9 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Testing",
 ]
+[project.urls]
+repository = "https://github.com/lode-braced/pytest-django-asyncio/tree/main"
+
 dependencies = [
     "asgiref>=3.9.1",
     "pytest>=8.0",

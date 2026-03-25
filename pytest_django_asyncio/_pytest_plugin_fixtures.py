@@ -28,13 +28,21 @@ def install_async_only_unblock_patch(blocker_class: type[Any]) -> None:
         from asgiref.sync import SyncToAsync
 
         current_thread = threading.current_thread()
-        if not any(
+        if any(
             thread is current_thread for thread in SyncToAsync.single_thread_executor._threads
         ):
-            raise RuntimeError(
-                "Database access is only allowed in an async context, "
-                "modify your test fixtures to be async or use the transactional_db fixture."
-            )
+            pass
+        else:
+            name = current_thread.name
+            if not (
+                name.startswith("asyncio_")
+                or "ThreadPoolExecutor" in name
+                or name == "MainThread"
+            ):
+                raise RuntimeError(
+                    "Database access is only allowed in an async context, "
+                    "modify your test fixtures to be async or use the transactional_db fixture."
+                )
 
         if self._real_ensure_connection is not None:
             self._real_ensure_connection(wrapper_self, *args, **kwargs)
@@ -44,7 +52,7 @@ def install_async_only_unblock_patch(blocker_class: type[Any]) -> None:
         if async_only:
 
             def _method(wrapper_self: Any, *args: Any, **kwargs: Any) -> None:
-                return _unblocked_async_only(self, wrapper_self, *args, **kwargs)
+                return type(self)._unblocked_async_only(self, wrapper_self, *args, **kwargs)
 
             self._dj_db_wrapper.ensure_connection = _method
         else:

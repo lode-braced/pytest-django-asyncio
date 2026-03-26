@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import contextlib
 import inspect
 import threading
+import types
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -27,10 +29,16 @@ def install_async_only_unblock_patch(blocker_class: type[Any]) -> None:
         __tracebackhide__ = True
         from asgiref.sync import SyncToAsync
 
-        current_thread = threading.current_thread()
-        if not any(
-            thread is current_thread for thread in SyncToAsync.single_thread_executor._threads
-        ):
+        allowed_thread_ids = getattr(self, "_async_allowed_thread_ids", None)
+        if allowed_thread_ids is None:
+            current_thread = threading.current_thread()
+            is_allowed = any(
+                thread is current_thread for thread in SyncToAsync.single_thread_executor._threads
+            )
+        else:
+            is_allowed = threading.get_ident() in allowed_thread_ids
+
+        if not is_allowed:
             raise RuntimeError(
                 "Database access is only allowed in an async context, "
                 "modify your test fixtures to be async or use the transactional_db fixture."
@@ -56,6 +64,84 @@ def install_async_only_unblock_patch(blocker_class: type[Any]) -> None:
 
     blocker_class._unblocked_async_only = _unblocked_async_only
     blocker_class.unblock = unblock
+
+
+@contextlib.contextmanager
+def _allow_async_db_threads(
+    django_db_blocker: DjangoDbBlocker,
+    *,
+    main_thread_id: int,
+    executor_thread_id: int,
+) -> Generator[None, None, None]:
+    sentinel = object()
+    previous_thread_ids = getattr(django_db_blocker, "_async_allowed_thread_ids", sentinel)
+    django_db_blocker._async_allowed_thread_ids = frozenset(
+        {main_thread_id, executor_thread_id}
+    )
+    try:
+        yield
+    finally:
+        if previous_thread_ids is sentinel:
+            delattr(django_db_blocker, "_async_allowed_thread_ids")
+        else:
+            django_db_blocker._async_allowed_thread_ids = previous_thread_ids
+
+
+@contextlib.contextmanager
+def _share_connections_between_allowed_threads(
+    *,
+    main_thread_id: int,
+    executor_thread_id: int,
+) -> Generator[None, None, None]:
+    from django.db import connections
+
+    allowed_thread_ids = frozenset({main_thread_id, executor_thread_id})
+    connection_local = connections._connections
+    shared_storage = types.SimpleNamespace()
+    original_lock_storage = connection_local._lock_storage
+    original_create_connection = connections.create_connection
+    patched_wrappers: list[tuple[Any, Any]] = []
+
+    def patch_wrapper(wrapper: Any) -> Any:
+        if any(existing_wrapper is wrapper for existing_wrapper, _original in patched_wrappers):
+            return wrapper
+
+        original_validate_thread_sharing = wrapper.validate_thread_sharing
+
+        def validate_thread_sharing(self: Any) -> None:
+            if threading.get_ident() in allowed_thread_ids:
+                return
+            original_validate_thread_sharing()
+
+        wrapper.validate_thread_sharing = types.MethodType(validate_thread_sharing, wrapper)
+        patched_wrappers.append((wrapper, original_validate_thread_sharing))
+        return wrapper
+
+    @contextlib.contextmanager
+    def _lock_storage() -> Generator[Any, None, None]:
+        if threading.get_ident() in allowed_thread_ids:
+            yield shared_storage
+        else:
+            with original_lock_storage() as storage:
+                yield storage
+
+    def create_connection(self: Any, alias: str) -> Any:
+        return patch_wrapper(original_create_connection(alias))
+
+    with original_lock_storage() as storage:
+        for alias in connections:
+            if hasattr(storage, alias):
+                setattr(shared_storage, alias, patch_wrapper(getattr(storage, alias)))
+
+    connection_local._lock_storage = _lock_storage
+    connections.create_connection = types.MethodType(create_connection, connections)
+    try:
+        yield
+    finally:
+        connection_local._lock_storage = original_lock_storage
+        connections.create_connection = original_create_connection
+        for wrapper, original_validate_thread_sharing in reversed(patched_wrappers):
+            wrapper.validate_thread_sharing = original_validate_thread_sharing
 
 
 def _get_django_db_settings(request: pytest.FixtureRequest) -> Any:
@@ -171,32 +257,44 @@ else:
             _get_django_db_settings(request)
         )
 
-        with django_db_blocker.unblock(async_only=True):
-            import django.test
-            from asgiref.sync import sync_to_async
+        import django.test
+        from asgiref.sync import sync_to_async
 
-            test_case_class = (
-                django.test.TransactionTestCase if transactional else django.test.TestCase
-            )
-            pytest_django_test_case = _build_pytest_django_test_case(
-                test_case_class,
-                reset_sequences=reset_sequences,
-                serialized_rollback=serialized_rollback,
-                databases=databases,
-                available_apps=available_apps,
-                skip_django_testcase_class_setup=not transactional,
-            )
+        main_thread_id = threading.get_ident()
+        executor_thread_id = await sync_to_async(threading.get_ident, thread_sensitive=True)()
 
-            await sync_to_async(pytest_django_test_case.setUpClass)()
+        with _allow_async_db_threads(
+            django_db_blocker,
+            main_thread_id=main_thread_id,
+            executor_thread_id=executor_thread_id,
+        ):
+            with _share_connections_between_allowed_threads(
+                main_thread_id=main_thread_id,
+                executor_thread_id=executor_thread_id,
+            ):
+                with django_db_blocker.unblock(async_only=True):
+                    test_case_class = (
+                        django.test.TransactionTestCase if transactional else django.test.TestCase
+                    )
+                    pytest_django_test_case = _build_pytest_django_test_case(
+                        test_case_class,
+                        reset_sequences=reset_sequences,
+                        serialized_rollback=serialized_rollback,
+                        databases=databases,
+                        available_apps=available_apps,
+                        skip_django_testcase_class_setup=not transactional,
+                    )
 
-            test_case = pytest_django_test_case(methodName="__init__")
-            await sync_to_async(test_case._pre_setup, thread_sensitive=True)()
+                    await sync_to_async(pytest_django_test_case.setUpClass)()
 
-            yield
+                    test_case = pytest_django_test_case(methodName="__init__")
+                    await sync_to_async(test_case._pre_setup, thread_sensitive=True)()
 
-            await sync_to_async(test_case._post_teardown, thread_sensitive=True)()
-            await sync_to_async(pytest_django_test_case.tearDownClass)()
-            await sync_to_async(pytest_django_test_case.doClassCleanups)()
+                    yield
+
+                    await sync_to_async(test_case._post_teardown, thread_sensitive=True)()
+                    await sync_to_async(pytest_django_test_case.tearDownClass)()
+                    await sync_to_async(pytest_django_test_case.doClassCleanups)()
 
 
 @pytest.fixture

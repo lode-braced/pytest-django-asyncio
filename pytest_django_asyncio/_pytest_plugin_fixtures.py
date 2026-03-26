@@ -75,9 +75,7 @@ def _allow_async_db_threads(
 ) -> Generator[None, None, None]:
     sentinel = object()
     previous_thread_ids = getattr(django_db_blocker, "_async_allowed_thread_ids", sentinel)
-    django_db_blocker._async_allowed_thread_ids = frozenset(
-        {main_thread_id, executor_thread_id}
-    )
+    django_db_blocker._async_allowed_thread_ids = frozenset({main_thread_id, executor_thread_id})
     try:
         yield
     finally:

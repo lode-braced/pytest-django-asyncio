@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 
-def _make_downstream_project(pytester, *, manual_load: bool) -> None:
+def _make_downstream_project(pytester, monkeypatch, *, manual_load: bool) -> None:
+    # The outer pytest-django run exports this repository's settings module, which would
+    # otherwise take precedence over the downstream project's ini in the subprocess.
+    monkeypatch.delenv("DJANGO_SETTINGS_MODULE", raising=False)
     pytester.makeini(
         """
         [pytest]
@@ -108,16 +111,16 @@ async def test_async_db_works_without_manual_plugin_loading(run_number):
     )
 
 
-def test_installed_plugin_autoloads(pytester) -> None:
-    _make_downstream_project(pytester, manual_load=False)
+def test_installed_plugin_autoloads(pytester, monkeypatch) -> None:
+    _make_downstream_project(pytester, monkeypatch, manual_load=False)
 
     result = pytester.runpytest_subprocess("-q")
 
     result.assert_outcomes(passed=3)
 
 
-def test_manual_plugin_load_does_not_duplicate_fixture_registration(pytester) -> None:
-    _make_downstream_project(pytester, manual_load=True)
+def test_manual_plugin_load_does_not_duplicate_fixture_registration(pytester, monkeypatch) -> None:
+    _make_downstream_project(pytester, monkeypatch, manual_load=True)
 
     result = pytester.runpytest_subprocess("-q")
 

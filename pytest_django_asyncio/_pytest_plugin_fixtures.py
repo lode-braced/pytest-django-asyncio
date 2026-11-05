@@ -3,7 +3,6 @@ from __future__ import annotations
 import contextlib
 import inspect
 import threading
-import types
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -85,61 +84,84 @@ def _allow_async_db_threads(
             django_db_blocker._async_allowed_thread_ids = previous_thread_ids
 
 
+class _SharedConnections:
+    def __init__(self, thread_ids: frozenset[int]) -> None:
+        self.thread_ids = thread_ids
+        self.by_alias: dict[str, Any] = {}
+        self._shared_wrappers: list[Any] = []
+
+    def set(self, alias: str, wrapper: Any) -> None:
+        if not any(shared is wrapper for shared in self._shared_wrappers):
+            wrapper.inc_thread_sharing()
+            self._shared_wrappers.append(wrapper)
+        self.by_alias[alias] = wrapper
+
+    def release(self) -> None:
+        for wrapper in self._shared_wrappers:
+            wrapper.dec_thread_sharing()
+        self._shared_wrappers.clear()
+
+
+class _ConnectionsLocalProxy:
+    """Stand-in for ``connections._connections`` (an ``asgiref.local.Local``) during a test.
+
+    Threads in ``shared.thread_ids`` see the shared connections; every other thread keeps its
+    own through the original ``Local``. Replacing the attribute avoids depending on ``Local``
+    internals, which asgiref 3.13 rewrote. Django's ``BaseConnectionHandler`` only reaches it
+    through getattr/setattr/delattr/hasattr, and ``django.test.signals`` swaps the same
+    attribute on ``caches``.
+    """
+
+    __slots__ = ("_local", "_shared")
+
+    def __init__(self, local: Any, shared: _SharedConnections) -> None:
+        object.__setattr__(self, "_local", local)
+        object.__setattr__(self, "_shared", shared)
+
+    def __getattr__(self, alias: str) -> Any:
+        if threading.get_ident() not in self._shared.thread_ids:
+            return getattr(self._local, alias)
+        try:
+            return self._shared.by_alias[alias]
+        except KeyError:
+            raise AttributeError(alias) from None
+
+    def __setattr__(self, alias: str, wrapper: Any) -> None:
+        if threading.get_ident() not in self._shared.thread_ids:
+            setattr(self._local, alias, wrapper)
+        else:
+            self._shared.set(alias, wrapper)
+
+    def __delattr__(self, alias: str) -> None:
+        if threading.get_ident() not in self._shared.thread_ids:
+            delattr(self._local, alias)
+            return
+        try:
+            del self._shared.by_alias[alias]
+        except KeyError:
+            raise AttributeError(alias) from None
+
+
 @contextlib.contextmanager
 def _share_connections_between_allowed_threads(
+    main_thread_connections: dict[str, Any],
     *,
     main_thread_id: int,
     executor_thread_id: int,
 ) -> Generator[None, None, None]:
     from django.db import connections
 
-    allowed_thread_ids = frozenset({main_thread_id, executor_thread_id})
-    connection_local = connections._connections
-    shared_storage = types.SimpleNamespace()
-    original_lock_storage = connection_local._lock_storage
-    original_create_connection = connections.create_connection
-    patched_wrappers: list[tuple[Any, Any]] = []
+    shared = _SharedConnections(frozenset({main_thread_id, executor_thread_id}))
+    for alias, wrapper in main_thread_connections.items():
+        shared.set(alias, wrapper)
 
-    def patch_wrapper(wrapper: Any) -> Any:
-        if any(existing_wrapper is wrapper for existing_wrapper, _original in patched_wrappers):
-            return wrapper
-
-        original_validate_thread_sharing = wrapper.validate_thread_sharing
-
-        def validate_thread_sharing(self: Any) -> None:
-            if threading.get_ident() in allowed_thread_ids:
-                return
-            original_validate_thread_sharing()
-
-        wrapper.validate_thread_sharing = types.MethodType(validate_thread_sharing, wrapper)
-        patched_wrappers.append((wrapper, original_validate_thread_sharing))
-        return wrapper
-
-    @contextlib.contextmanager
-    def _lock_storage() -> Generator[Any, None, None]:
-        if threading.get_ident() in allowed_thread_ids:
-            yield shared_storage
-        else:
-            with original_lock_storage() as storage:
-                yield storage
-
-    def create_connection(self: Any, alias: str) -> Any:
-        return patch_wrapper(original_create_connection(alias))
-
-    with original_lock_storage() as storage:
-        for alias in connections:
-            if hasattr(storage, alias):
-                setattr(shared_storage, alias, patch_wrapper(getattr(storage, alias)))
-
-    connection_local._lock_storage = _lock_storage
-    connections.create_connection = types.MethodType(create_connection, connections)
+    original_local = connections._connections
+    connections._connections = _ConnectionsLocalProxy(original_local, shared)
     try:
         yield
     finally:
-        connection_local._lock_storage = original_lock_storage
-        connections.create_connection = original_create_connection
-        for wrapper, original_validate_thread_sharing in reversed(patched_wrappers):
-            wrapper.validate_thread_sharing = original_validate_thread_sharing
+        connections._connections = original_local
+        shared.release()
 
 
 def _get_django_db_settings(request: pytest.FixtureRequest) -> Any:
@@ -213,6 +235,17 @@ def _build_pytest_django_test_case(
 
 
 @pytest.fixture
+def _django_db_main_thread_connections(django_db_setup: None) -> dict[str, Any]:  # noqa: ARG001
+    # Collected by a sync fixture because once the event loop runs on the main thread, asgiref
+    # hands it a separate set of connections. Sharing these instead of opening new ones means
+    # no per-test connection is left open (which would block dropping a Postgres test DB), and
+    # Django closes them as usual when it tears down the test databases.
+    from django.db import connections
+
+    return {alias: connections[alias] for alias in connections}
+
+
+@pytest.fixture
 def _sync_django_db_helper(
     request: pytest.FixtureRequest,
     django_db_setup: None,
@@ -234,6 +267,7 @@ except ImportError:
     async def _async_django_db_helper(
         request: pytest.FixtureRequest,  # noqa: ARG001
         django_db_blocker: DjangoDbBlocker,  # noqa: ARG001
+        _django_db_main_thread_connections: dict[str, Any],  # noqa: ARG001
     ) -> AsyncGenerator[None, None]:
         raise RuntimeError(
             "The `pytest-asyncio` plugin is required to use async Django database fixtures."
@@ -246,6 +280,7 @@ else:
     async def _async_django_db_helper(
         request: pytest.FixtureRequest,
         django_db_blocker: DjangoDbBlocker,
+        _django_db_main_thread_connections: dict[str, Any],
     ) -> AsyncGenerator[None, None]:
         if is_django_unittest(request):
             yield
@@ -267,6 +302,7 @@ else:
             executor_thread_id=executor_thread_id,
         ):
             with _share_connections_between_allowed_threads(
+                _django_db_main_thread_connections,
                 main_thread_id=main_thread_id,
                 executor_thread_id=executor_thread_id,
             ):
@@ -294,6 +330,18 @@ else:
                     await sync_to_async(pytest_django_test_case.tearDownClass)()
                     await sync_to_async(pytest_django_test_case.doClassCleanups)()
 
+    @pytest_asyncio.fixture
+    async def _async_django_db_close_executor_connections() -> AsyncGenerator[None, None]:
+        # Transactional async tests run their ORM calls on the sync_to_async executor thread
+        # with that thread's own connections, which TransactionTestCase never closes. Left
+        # open, they keep Postgres from dropping the test database at the end of the session.
+        yield
+
+        from asgiref.sync import sync_to_async
+        from django.db import connections
+
+        await sync_to_async(connections.close_all, thread_sensitive=True)()
+
 
 @pytest.fixture
 def _django_db_helper(
@@ -306,5 +354,7 @@ def _django_db_helper(
 
     if transactional or not asyncio_marker:
         request.getfixturevalue("_sync_django_db_helper")
+        if asyncio_marker:
+            request.getfixturevalue("_async_django_db_close_executor_connections")
     else:
         request.getfixturevalue("_async_django_db_helper")

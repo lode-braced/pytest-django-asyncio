@@ -6,7 +6,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
 
@@ -21,6 +21,63 @@ jobs:
         run: uv sync --locked --group dev
       - name: Run unit tests
         run: uv run pytest
+
+  compat:
+    name: compat (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: oldest supported
+            python: "3.10"
+            requirements: >-
+              Django~=4.2.0 asgiref==3.9.1 pytest~=8.2.0 pytest-django==4.11.1
+              pytest-asyncio==1.1.0
+          - name: Django 4.2, asgiref 3.13
+            python: "3.12"
+            requirements: Django~=4.2.0 asgiref~=3.13.0
+          - name: Django 5.2, asgiref 3.12
+            python: "3.12"
+            requirements: Django~=5.2.0 asgiref~=3.12.0
+          - name: Django 6.0, asgiref 3.13
+            python: "3.12"
+            requirements: Django~=6.0.0 asgiref~=3.13.0
+          - name: Django 6.1, asgiref 3.12
+            python: "3.13"
+            requirements: Django~=6.1.0 asgiref~=3.12.0
+          - name: Django 6.1, asgiref 3.13
+            python: "3.13"
+            requirements: Django~=6.1.0 asgiref~=3.13.0
+          - name: Django 6.1, asgiref 3.13, Postgres
+            python: "3.13"
+            requirements: Django~=6.1.0 asgiref~=3.13.0 psycopg[binary]
+            postgres-host: localhost
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      POSTGRES_HOST: ${{ matrix.postgres-host }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: "auto"
+      # Pytest warnings are errors here so that a failed test database teardown (for example
+      # a connection left open on the sync_to_async executor thread) fails the job.
+      - name: Run unit tests
+        run: |
+          read -ra requirements <<< "${{ matrix.requirements }}"
+          with_args=()
+          for requirement in "${requirements[@]}"; do with_args+=(--with "$requirement"); done
+          uv run --isolated --no-project --python "${{ matrix.python }}" \
+            --with-editable . "${with_args[@]}" pytest -W error::pytest.PytestWarning
 
   lint:
     runs-on: ubuntu-latest

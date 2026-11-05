@@ -1,6 +1,6 @@
 [project]
 name = "pytest-django-asyncio"
-version = "0.1.0"
+version = "0.2.1"
 description = "Temporary pytest plugin backport for async Django DB fixture handling."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -8,6 +8,10 @@ license = { text = "MIT" }
 classifiers = [
     "Development Status :: 4 - Beta",
     "Framework :: Django",
+    "Framework :: Django :: 4.2",
+    "Framework :: Django :: 5.2",
+    "Framework :: Django :: 6.0",
+    "Framework :: Django :: 6.1",
     "Framework :: Pytest",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
@@ -18,14 +22,15 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Testing",
 ]
 
 dependencies = [
     "asgiref>=3.9.1",
-    "pytest>=8.0",
+    "pytest>=8.2",
     "pytest-django>=4.11.1",
-    "pytest-asyncio>=0.22.0",
+    "pytest-asyncio>=1.1.0",
 ]
 
 [project.urls]
@@ -51,6 +56,7 @@ dev = [
 
 [tool.pytest.ini_options]
 addopts = ["-ra"]
+asyncio_default_fixture_loop_scope = "function"
 DJANGO_SETTINGS_MODULE = "tests.project.settings"
 pythonpath = ["."]
 testpaths = ["tests"]

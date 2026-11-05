@@ -15,6 +15,7 @@ _DB_FIXTURE_NAMES = frozenset(
         "_django_db_helper",
         "_sync_django_db_helper",
         "_async_django_db_helper",
+        "_django_db_main_thread_connections",
     }
 )
 
@@ -92,7 +93,9 @@ def _should_wrap_sync_db_fixture(
     return any(argname in _DB_FIXTURE_NAMES for argname in fixturedef.argnames)
 
 
-@pytest.hookimpl(wrapper=True)
+# tryfirst makes this the outer wrapper, so it sees async fixtures before pytest-asyncio's own
+# pytest_fixture_setup wrapper swaps their function for a sync one that this hook would rewrap.
+@pytest.hookimpl(wrapper=True, tryfirst=True)
 def pytest_fixture_setup(
     fixturedef: pytest.FixtureDef[object],
     request: pytest.FixtureRequest,

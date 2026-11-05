@@ -32,6 +32,20 @@ You still need the usual pytest stack in the consuming project:
 - `pytest-asyncio`
 - `Django`
 
+## Supported versions
+
+| Package          | Minimum | Tested up to |
+|------------------|---------|--------------|
+| Python           | 3.10    | 3.14         |
+| Django           | 4.2     | 6.1          |
+| asgiref          | 3.9.1   | 3.13         |
+| pytest           | 8.2     | 9.2          |
+| pytest-django    | 4.11.1  | 4.14         |
+| pytest-asyncio   | 1.1.0   | 1.4          |
+
+asgiref 3.13 needs Python 3.11 or newer, and Django 6.x needs Python 3.12 or newer. CI runs the oldest supported
+combination, recent Django and asgiref pairs, and Django 6.1 on PostgreSQL.
+
 ## Usage
 
 After installation, pytest auto-loads the plugin through its `pytest11` entry point. That means it should
@@ -66,4 +80,26 @@ That late registration lets this package's `_django_db_helper` override win over
 
 The sync path delegates back to `pytest-django`; the async path uses a separate helper modeled
 on [pytest-django PR #1223](https://github.com/pytest-dev/pytest-django/pull/1223): the transaction start/stop run in
-the same async worker thread that will execute the actual test, using `async_to_sync`.
+the same `sync_to_async` worker thread that executes the test's ORM calls.
+
+For non-transactional async tests, the main thread and the `sync_to_async` worker thread share one set of database
+connections: the main thread's regular connections, so the test transaction covers ORM calls from either thread. During
+the test, `connections._connections` is replaced by a small stand-in that hands those connections to the two threads,
+and Django's `inc_thread_sharing()` allows their use across threads. Other threads keep their own connections and are
+still blocked from database access.
+
+Transactional async tests close the worker thread's connections after each test, so PostgreSQL can drop the test
+database at the end of the session.
+
+## Development
+
+Run the test suite against a specific dependency combination with `uv`:
+
+```bash
+uv run --isolated --no-project --python 3.13 --with-editable . \
+  --with "Django~=6.1.0" --with "asgiref~=3.13.0" pytest
+```
+
+Set `POSTGRES_HOST` (and optionally `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`) and add
+`--with "psycopg[binary]"` to run against PostgreSQL instead of SQLite. The `compat` job in
+`.github/workflows/ci.yml` lists the combinations CI runs.
